@@ -55,6 +55,13 @@ def page_job(url, title, manga=True, series=None):
                         o.update(guess=best['guess'], voice=best['voice'], why=f"joined to a bubble ({best['why']})")
     except Exception as e:
         out = [dict(o, why=o['why'] + f' (join check failed: {e})') for o in out]
+    if manga:                                                # the panels: a panel is finished before the next one starts
+        try:
+            import numpy as np, panels
+            for o, n in zip(out, panels.order(np.array(img.convert('L')), [o['box'] for o in out])):
+                o['panel'] = n
+        except Exception:
+            traceback.print_exc()
     return {'w': img.width, 'h': img.height, 'bubbles': out, 'secs': round(time.time() - t0, 1), 'text_secs': round(t1 - t0, 1)}
 
 

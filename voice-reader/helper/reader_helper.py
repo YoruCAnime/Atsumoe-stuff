@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-VERSION = 'v24'
+VERSION = 'v25'
 LEAD_IN = 0.3                                # quiet before each line: Bluetooth headphones swallow the first moment
 TAIL = 0.12                                  # and a short breath after it
 PAGES_VERSION = 'v15'                          # the pages' cache (results of reading a page)
@@ -239,6 +239,8 @@ def load_chapter(mid, cid, title):
     chapters[cid] = {'mangaId': mid, 'title': ' | '.join(n for n in names if n), 'pages': rc['pages'], 'done': done,
                      'start': 0, 'seen': time.time(), 'rtl': kind == 'manga', 'id': cid,
                      'number': rc.get('number'), 'group': rc.get('scanlationMangaId')}
+    if done and kind == 'manga':
+        threading.Thread(target=panels_for_chapter, args=(cid,), daemon=True).start()
     return chapters[cid]
 
 
@@ -321,24 +323,55 @@ def mend_names(ch, text):
 
 
 def ordered(ch, i):
-    """a page's bubbles in reading order: top to bottom; bubbles side by side (their heights overlap) right to left
-    in manga, left to right otherwise"""
+    """a page's bubbles in reading order: panel by panel (manga: panels.py); in a panel top to bottom, and bubbles side by side
+    (their heights overlap) right to left in manga, left to right otherwise"""
     bs = [said_to_her(ch, dict(b, text=mend_names(ch, b['text']))) for b in ch['done'][i]['bubbles']]
     if not ch.get('rtl'):
         return one_speaker(bs)
-    bs.sort(key=lambda b: b['box'][1])
-    rows, cur, bottom = [], [], None
-    for b in bs:
-        y0, y1 = b['box'][1], b['box'][3]
-        if cur and y0 < bottom - 0.3 * (y1 - y0):            # starts before the row ends: the same row
-            cur.append(b); bottom = max(bottom, y1)
-        else:
-            if cur:
-                rows.append(cur)
-            cur, bottom = [b], y1
-    if cur:
-        rows.append(cur)
-    return one_speaker([b for r in rows for b in sorted(r, key=lambda b: -(b['box'][0] + b['box'][2]))])
+    out = []
+    for n in sorted({b.get('panel', 0) for b in bs}):
+        rows, cur, bottom = [], [], None
+        for b in sorted((b for b in bs if b.get('panel', 0) == n), key=lambda b: b['box'][1]):
+            y0, y1 = b['box'][1], b['box'][3]
+            if cur and y0 < bottom - 0.3 * (y1 - y0):        # starts before the row ends: the same row
+                cur.append(b); bottom = max(bottom, y1)
+            else:
+                if cur:
+                    rows.append(cur)
+                cur, bottom = [b], y1
+        if cur:
+            rows.append(cur)
+        out += [b for r in rows for b in sorted(r, key=lambda b: -(b['box'][0] + b['box'][2]))]
+    return one_speaker(out)
+
+
+def add_panels(ch, i):
+    """a page read before the reader knew panels gets them now (no reading again: its picture and a moment)"""
+    r = ch['done'].get(i)
+    if not r or not ch.get('rtl') or len(r['bubbles']) < 2 or all('panel' in b for b in r['bubbles']):
+        return False
+    import io, numpy as np, panels
+    from PIL import Image
+    img = ch['pages'][i]['image']
+    im = Image.open(io.BytesIO(get('https://cdn.atsu.moe' + img if img.startswith('/') else img))).convert('L')
+    s = im.width / r['w']
+    for b, n in zip(r['bubbles'], panels.order(np.array(im), [[v * s for v in b['box']] for b in r['bubbles']])):
+        b['panel'] = n
+    return True
+
+
+def panels_for_chapter(cid):
+    ch = chapters.get(cid)
+    if not ch:
+        return
+    changed = False
+    for i in sorted(ch['done']):
+        try:
+            changed = add_panels(ch, i) or changed
+        except Exception:
+            log('panels failed', cid, i, traceback.format_exc(limit=2))
+    if changed and cid in chapters:
+        save_chapter(cid)
 
 
 OPENER = re.compile(r"^\W*(when|if|because|though|even though|although|since|while|after|before)\b", re.I)   # only words that open an unfinished clause
@@ -546,7 +579,7 @@ def rest_of(s):
 def forget_finished(mid, s):
     """chapters before the one being read are finished: their spoken lines and read pages go (lines the coming chapters share stay)"""
     cur = chapters.get(s['current'])
-    if not cur:
+    if not cur or os.environ.get('READER_KEEP'):             # READER_KEEP: a test copy, deleting nothing of what you read
         return
     before = [cid for n, cid in s['order'] if n < (cur.get('number') or 0) and (cid in chapters or os.path.exists(cache_path(cid)))]
     if not before:
@@ -669,6 +702,11 @@ class H(BaseHTTPRequestHandler):
                 if not ch:
                     return self._send(404, {'error': 'chapter not started'})
                 if i in ch['done']:
+                    try:
+                        if add_panels(ch, i):
+                            save_chapter(cid)
+                    except Exception:
+                        log('panels failed', cid, i, traceback.format_exc(limit=2))
                     return self._send(200, {'state': 'ready', **ch['done'][i], 'bubbles': ordered(ch, i), 'rtl': bool(ch.get('rtl'))})
                 if (cid, i) not in queued:
                     want(cid, i)

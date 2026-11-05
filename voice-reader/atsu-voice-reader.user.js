@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Atsu Voice Reader
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      0.6.0
+// @version      0.6.1
 // @description  Reads atsu.moe's speech bubbles aloud in natural voices (a woman's voice for female characters, a man's for male ones; the female voice when unsure). Sound effects, titles and credits are skipped. The whole chapter is got ready ahead (a thin bar on the Voice button shows how far). Works with atsu's own auto-scroll (K) or your own scrolling: auto-scroll pauses while a bubble is read, then carries on. V = on / off (off at first), B = the other voice for the line just read; the violet button = volume, speed, auto-scroll pausing and "My voice" (made with Voice Maker from your own clips). Needs the Atsu Voice Reader helper running on this PC.
 // @author       YoruCAnime
 // @updateURL    https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/voice-reader/atsu-voice-reader.user.js
@@ -113,7 +113,7 @@
       const r = await call('GET', `/bubbles?chapterId=${encodeURIComponent(chap.chapterId)}&page=${i}`);
       if (r.state === 'ready') {
         chap.bubbles[i] = r;
-        const add = r.bubbles.map((b, k) => ({ page: i, i: k, text: b.text, box: b.box, w: r.w, voice: flips[`${chap.chapterId}:${i}:${k}`] || b.voice }));
+        const add = r.bubbles.map((b, k) => ({ page: i, i: k, text: b.text, box: b.box, w: r.w, voice: flips[`${chap.chapterId}:${i}:${b.text}`] || b.voice }));
         const at = queue[pos];                                // keep the place: bubbles of an earlier page arriving late
         queue = queue.concat(add).sort((a, b) => a.page - b.page || a.i - b.i);   // must not send it back
         pos = at ? queue.indexOf(at) : (pos >= queue.length - add.length ? queue.length - add.length : pos);
@@ -225,19 +225,23 @@
     for (let i = cur; i <= cur + 2 && i < chap.pages.length; i++) loadBubbles(i, cur);
     if (speaking) { highlight(speaking.b); return; }
     if (blocked) return;
-    // skip what has already gone up off the screen
+    // skip what has already gone up off the screen, but not the panel we come back up to: the right column was read down
+    // to its end, and the left column's first bubble has just left the top
+    const cameBack = (x, r) => lastRead && lastRead.page === x.page && x.box[3] < lastRead.box[1] && r && r.bottom > -innerHeight * 1.2;
     while (pos < queue.length) {
       const r = rect(queue[pos]);
-      if (r && r.bottom < 0) pos++; else break;
+      if (r && r.bottom < 0 && !cameBack(queue[pos], r)) pos++; else break;
     }
     const b = queue[pos];
     const r = b && rect(b);
+    const after = queue[pos + 1];
+    const goesBackUp = b && after && after.page === b.page && after.box[3] < b.box[1];   // the next line is higher up: don't let that one leave the screen
     // the coming lines get made before they reach the reading line, so they start at once
     if (prog && prog.ready) for (let j = 0; j < AHEAD; j++) {
       const n = queue[pos + j], nr = n && rect(n);
       if (nr && nr.top < innerHeight * 2.5) line(n);
     }
-    if (b && r && (r.top + r.bottom) / 2 <= innerHeight * LINE && r.bottom > 0) {
+    if (b && r && (cameBack(b, r) || (r.bottom > 0 && ((r.top + r.bottom) / 2 <= innerHeight * LINE || (goesBackUp && r.bottom <= innerHeight * 0.96))))) {
       pos++; speak(b);
     } else if (pausedByUs) {
       resumeAuto();                                           // nothing to read just here: let it scroll on
@@ -365,7 +369,7 @@
     const b = lastRead;
     if (!b || !chap) return;
     b.voice = b.voice === 'F' ? 'M' : 'F';
-    flips[`${chap.chapterId}:${b.page}:${b.i}`] = b.voice; GM_setValue('flips', JSON.stringify(flips));
+    flips[`${chap.chapterId}:${b.page}:${b.text}`] = b.voice; GM_setValue('flips', JSON.stringify(flips));
     toast(b.voice === 'F' ? "Female voice for this line" : "Male voice for this line");
     speak(b);
   }
