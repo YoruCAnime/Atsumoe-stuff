@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-VERSION = 'v25'
+VERSION = 'v26'
 LEAD_IN = 0.3                                # quiet before each line: Bluetooth headphones swallow the first moment
 TAIL = 0.12                                  # and a short breath after it
 PAGES_VERSION = 'v15'                          # the pages' cache (results of reading a page)
@@ -611,8 +611,20 @@ def prepared(mid):
         return {'running': bool(s and s.get('pinned')), 'done': 0, 'total': 0}
     cur = chapters.get(s.get('current'))
     floor = cur.get('number') or 0 if cur else s.get('from', 0)
-    want_ = [cid for n, cid in s['order'] if n >= floor]
-    return {'running': bool(s.get('pinned')), 'done': sum(1 for c in want_ if c in s['ready']), 'total': len(want_), 'group': s.get('group'), 'from': s.get('from')}
+    want_ = [(n, cid) for n, cid in s['order'] if n >= floor]
+    done = sum(1 for _, c in want_ if c in s['ready'])
+    res = {'running': bool(s.get('pinned')), 'done': done, 'total': len(want_), 'group': s.get('group'), 'from': s.get('from'), 'percent': 100 * done / max(1, len(want_))}
+    if s.get('pinned'):                                      # the chapter being worked on: how far it has got
+        for n, cid in want_:
+            ch = chapters.get(cid)
+            if cid not in s['ready'] and ch:
+                p = progress(ch)
+                read = p['pagesDone'] / max(1, p['pages'])
+                part = 0.2 * read + 0.8 * read * p['linesDone'] / max(1, p['lines'])   # reading the pages is the short part
+                res.update(number=n, pages=p['pages'], pagesDone=p['pagesDone'], lines=p['lines'], linesDone=p['linesDone'],
+                           percent=100 * (done + part) / max(1, len(want_)))
+                break
+    return res
 
 
 def follow(mid, cid, own, on):

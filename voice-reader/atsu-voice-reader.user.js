@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Atsu Voice Reader
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      0.6.1
+// @version      0.6.2
 // @description  Reads atsu.moe's speech bubbles aloud in natural voices (a woman's voice for female characters, a man's for male ones; the female voice when unsure). Sound effects, titles and credits are skipped. The whole chapter is got ready ahead (a thin bar on the Voice button shows how far). Works with atsu's own auto-scroll (K) or your own scrolling: auto-scroll pauses while a bubble is read, then carries on. V = on / off (off at first), B = the other voice for the line just read; the violet button = volume, speed, auto-scroll pausing and "My voice" (made with Voice Maker from your own clips). Needs the Atsu Voice Reader helper running on this PC.
 // @author       YoruCAnime
 // @updateURL    https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/voice-reader/atsu-voice-reader.user.js
@@ -415,9 +415,11 @@
     const group = el('select'), from = el('select');
     const go = el('button', { type: 'button', className: 'avr-go', textContent: 'Get voices ready' });
     const info = el('div', { className: 'avr-keys', textContent: '' });
+    const fill = el('i'), track = el('div', { className: 'avr-track', hidden: true }, fill);
+    const now = el('div', { className: 'avr-now', hidden: true });
     const panel = el('div', { id: 'avr-panel', hidden: true }, el('div', { className: 'avr-h', textContent: 'Get this manga ready' }),
       el('label', { className: 'avr-sel' }, el('span', { textContent: 'Group' }), group),
-      el('label', { className: 'avr-sel' }, el('span', { textContent: 'From' }), from), go, info);
+      el('label', { className: 'avr-sel' }, el('span', { textContent: 'From' }), from), go, track, now, info);
     const box = el('div', { id: 'avr-box' }, panel, btn);
     document.body.appendChild(box);
     prep = { id, box };
@@ -449,14 +451,20 @@
         const r = await call('GET', `/prepared?mangaId=${id}`);
         running = r.running;
         if (r.total) {
-          label.textContent = r.done >= r.total ? 'Voices ready' : `Voices ${r.done}/${r.total}`;
-          bar.style.width = r.running ? `${Math.max(3, 100 * r.done / r.total)}%` : '0';
+          const pct = r.percent != null ? r.percent : 100 * r.done / r.total;
+          label.textContent = r.done >= r.total ? 'Voices ready' : r.running ? `Voices ${Math.floor(pct)}%` : `Voices ${r.done}/${r.total}`;
+          bar.style.width = r.running ? `${Math.max(3, pct)}%` : '0';
+          track.hidden = now.hidden = !r.running;
+          fill.style.width = `${Math.max(1, pct)}%`;
+          now.textContent = !r.running || r.number == null ? 'Starting...'
+            : r.pagesDone < r.pages ? `Chapter ${r.number}: reading pages ${r.pagesDone} of ${r.pages}`
+              : `Chapter ${r.number}: voices ${r.linesDone} of ${r.lines} lines`;
           info.textContent = r.running ? `${r.done} of ${r.total} chapters ready. Keeps going if you close this tab.` : (r.done >= r.total ? 'All ready. Finished chapters are deleted as you read on.' : `${r.done} of ${r.total} chapters ready. Stopped.`);
           btn.classList.toggle('avr-on', r.running || r.done >= r.total);
         }
         if (running) go.textContent = 'Stop'; else if (me.groups) fillFrom(Number(from.value));
       } catch (e) { /* the helper isn't running: the button says so when pressed */ }
-      setTimeout(poll, running ? 4000 : 15000);
+      setTimeout(poll, running ? 2000 : 15000);
     };
     loadPrep(id).then((groups) => {
       if (prep !== me) return;
@@ -488,6 +496,10 @@
     #avr-gear { width: 26px; height: 26px; border: 0; border-radius: 50%; padding: 0; display: grid; place-items: center;
       background: rgba(110, 72, 190, .6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; opacity: 0;
       transition: opacity .2s; }
+    .avr-track { height: 6px; margin-top: 10px; border-radius: 3px; background: rgba(167,139,250,.18); overflow: hidden; }
+    .avr-track i { display: block; height: 100%; width: 1%; border-radius: 3px; background: #a78bfa; transition: width .6s ease; }
+    .avr-now { margin-top: 6px; font-size: 12px; color: #d8ccff; }
+    .avr-track[hidden], .avr-now[hidden] { display: none; }
     #avr-box:hover #avr-gear, #avr-box.avr-open #avr-gear, #avr-gear:focus-visible { opacity: .85; }
     #avr-gear:hover { opacity: 1; }
     #avr-panel { position: absolute; right: 0; bottom: calc(100% + 8px); width: 250px; padding: 12px 14px; border-radius: 14px;
