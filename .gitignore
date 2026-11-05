@@ -1,0 +1,9 @@
+.venv*/
+models/
+voices/
+cache/
+samples/
+demo/
+__pycache__/
+*.log*
+ffmpeg.txt
