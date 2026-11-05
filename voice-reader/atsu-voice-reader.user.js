@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Atsu Voice Reader
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      0.6.2
+// @version      0.6.3
 // @description  Reads atsu.moe's speech bubbles aloud in natural voices (a woman's voice for female characters, a man's for male ones; the female voice when unsure). Sound effects, titles and credits are skipped. The whole chapter is got ready ahead (a thin bar on the Voice button shows how far). Works with atsu's own auto-scroll (K) or your own scrolling: auto-scroll pauses while a bubble is read, then carries on. V = on / off (off at first), B = the other voice for the line just read; the violet button = volume, speed, auto-scroll pausing and "My voice" (made with Voice Maker from your own clips). Needs the Atsu Voice Reader helper running on this PC.
 // @author       YoruCAnime
 // @updateURL    https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/voice-reader/atsu-voice-reader.user.js
@@ -405,6 +405,12 @@
     groups.sort((x, y) => y.read - x.read || y.chapters.length - x.chapters.length);
     return groups;
   }
+  function timeLeft(secs) {
+    if (secs < 60) return 'Less than a minute left';
+    const min = Math.ceil(secs / 60);
+    if (min < 60) return `About ${min} min left`;
+    return `About ${Math.floor(min / 60)} h ${min % 60} min left`;
+  }
   function drawPrep() {
     const id = infoId();
     if (!id) { if (prep) { prep.box.remove(); prep = null; } return; }
@@ -459,6 +465,7 @@
           now.textContent = !r.running || r.number == null ? 'Starting...'
             : r.pagesDone < r.pages ? `Chapter ${r.number}: reading pages ${r.pagesDone} of ${r.pages}`
               : `Chapter ${r.number}: voices ${r.linesDone} of ${r.lines} lines`;
+          if (r.running) now.textContent += `\n${r.etaSecs == null ? 'Working out the time left...' : timeLeft(r.etaSecs)}`;
           info.textContent = r.running ? `${r.done} of ${r.total} chapters ready. Keeps going if you close this tab.` : (r.done >= r.total ? 'All ready. Finished chapters are deleted as you read on.' : `${r.done} of ${r.total} chapters ready. Stopped.`);
           btn.classList.toggle('avr-on', r.running || r.done >= r.total);
         }
@@ -498,7 +505,7 @@
       transition: opacity .2s; }
     .avr-track { height: 6px; margin-top: 10px; border-radius: 3px; background: rgba(167,139,250,.18); overflow: hidden; }
     .avr-track i { display: block; height: 100%; width: 1%; border-radius: 3px; background: #a78bfa; transition: width .6s ease; }
-    .avr-now { margin-top: 6px; font-size: 12px; color: #d8ccff; }
+    .avr-now { margin-top: 6px; font-size: 12px; line-height: 1.45; color: #d8ccff; white-space: pre-line; }
     .avr-track[hidden], .avr-now[hidden] { display: none; }
     #avr-box:hover #avr-gear, #avr-box.avr-open #avr-gear, #avr-gear:focus-visible { opacity: .85; }
     #avr-gear:hover { opacity: 1; }

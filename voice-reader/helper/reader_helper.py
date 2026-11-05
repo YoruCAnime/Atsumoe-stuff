@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-VERSION = 'v26'
+VERSION = 'v27'
 LEAD_IN = 0.3                                # quiet before each line: Bluetooth headphones swallow the first moment
 TAIL = 0.12                                  # and a short breath after it
 PAGES_VERSION = 'v15'                          # the pages' cache (results of reading a page)
@@ -624,6 +624,16 @@ def prepared(mid):
                 res.update(number=n, pages=p['pages'], pagesDone=p['pagesDone'], lines=p['lines'], linesDone=p['linesDone'],
                            percent=100 * (done + part) / max(1, len(want_)))
                 break
+        # time left: at the speed of the last ten minutes (the first moment is left out: lines made earlier count at once)
+        now = time.time()
+        marks = s.setdefault('marks', [])
+        if not marks or now - marks[-1][0] >= 5:
+            marks.append((now, res['percent']))
+        marks[:] = [m for m in marks if now - m[0] <= 600 and m[1] <= res['percent']]
+        if marks and now - marks[0][0] >= 45 and res['percent'] > marks[0][1]:
+            res['etaSecs'] = round((100 - res['percent']) * (now - marks[0][0]) / (res['percent'] - marks[0][1]))
+    else:
+        s.pop('marks', None)
     return res
 
 
