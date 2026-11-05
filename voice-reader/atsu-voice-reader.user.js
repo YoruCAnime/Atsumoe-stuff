@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Atsu Voice Reader
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      0.4.2
+// @version      0.6.0
 // @description  Reads atsu.moe's speech bubbles aloud in natural voices (a woman's voice for female characters, a man's for male ones; the female voice when unsure). Sound effects, titles and credits are skipped. The whole chapter is got ready ahead (a thin bar on the Voice button shows how far). Works with atsu's own auto-scroll (K) or your own scrolling: auto-scroll pauses while a bubble is read, then carries on. V = on / off (off at first), B = the other voice for the line just read; the violet button = volume, speed, auto-scroll pausing and "My voice" (made with Voice Maker from your own clips). Needs the Atsu Voice Reader helper running on this PC.
 // @author       YoruCAnime
 // @updateURL    https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/voice-reader/atsu-voice-reader.user.js
@@ -30,7 +30,7 @@
   let lastRead = null;
   const audio = new Map();      // key -> Promise<blob url>
   const flips = JSON.parse(GM_getValue('flips', '{}'));   // "chapter:page:i" -> 'F' | 'M'
-  const S = Object.assign({ volume: 0.9, rate: 1, pauseAuto: true, ownF: true, ownM: true }, JSON.parse(GM_getValue('settings', '{}')));
+  const S = Object.assign({ volume: 0.9, rate: 1, pauseAuto: true, ownF: true, ownM: true, rest: true }, JSON.parse(GM_getValue('settings', '{}')));
   const code = (v) => v + (S['own' + v] ? 'O' : '');   // F / M = the built-in voices, FO / MO = "My voice"
   const saveS = () => GM_setValue('settings', JSON.stringify(S));
   let prog = null;              // how far the helper has got this chapter ready: {pages, pagesDone, lines, linesDone, ready}
@@ -71,10 +71,10 @@
     } catch (e) { helperProblem(e); }
   }
 
-  const postChapter = () => call('POST', '/chapter', { mangaId: chap.mangaId, chapterId: chap.chapterId, title: chap.title || '', page: currentPage(), own: { F: S.ownF, M: S.ownM } });
+  const postChapter = () => call('POST', '/chapter', { mangaId: chap.mangaId, chapterId: chap.chapterId, title: chap.title || '', page: currentPage(), own: { F: S.ownF, M: S.ownM }, rest: S.rest });
   let progT = 0, placeT = 0, wasReady = false;
   async function pollProgress() {
-    if (!chap || !chap.pages || (prog && prog.ready && prog.chapterId === chap.chapterId) || Date.now() - progT < 1500) return;
+    if (!chap || !chap.pages || Date.now() - progT < (prog && prog.ready && prog.chapterId === chap.chapterId ? 20000 : 1500)) return;
     progT = Date.now();
     const c = chap;
     if (prog && !prog.ready && Date.now() - placeT > 8000) {     // tell the helper where you are: it makes the lines near you first
@@ -298,6 +298,8 @@
       pickers[v] = sel;
       return el('label', { className: 'avr-sel' }, el('span', { textContent: name }), sel);
     };
+    const restChk = el('input', { type: 'checkbox', checked: S.rest });
+    restChk.addEventListener('change', () => { S.rest = restChk.checked; saveS(); restChk.blur(); if (chap && chap.pages) postChapter().catch(helperProblem); });
     const chk = el('input', { type: 'checkbox', checked: S.pauseAuto });
     chk.addEventListener('change', () => { S.pauseAuto = chk.checked; saveS(); if (!S.pauseAuto) resumeAuto(); chk.blur(); });
     panel = el('div', { id: 'avr-panel', hidden: true },
@@ -307,6 +309,7 @@
       picker('F', 'Female voice', 'Bella (F4)'),
       picker('M', 'Male voice', 'Echo (M5)'),
       el('label', { className: 'avr-chk' }, chk, el('span', { textContent: 'Pause auto-scroll while a line is read' })),
+      el('label', { className: 'avr-chk' }, restChk, el('span', { textContent: 'Get the rest of this manga ready ahead' })),
       el('div', { className: 'avr-keys', textContent: 'V on / off  ·  B other voice for the last line' }));
     gear.addEventListener('click', () => {
       panel.hidden = !panel.hidden; box.classList.toggle('avr-open', !panel.hidden);
@@ -331,7 +334,7 @@
       const pf = p ? p.pagesDone / Math.max(1, p.pages) : 0, lf = p && p.lines ? p.linesDone / p.lines : 0;
       frac = 0.1 * pf + 0.9 * pf * lf;                          // pages read (quick), then their lines spoken (most of the time)
       text = p && p.lines && pf >= 1 ? `Getting ready ${Math.floor(frac * 100)}% · ${p.linesDone}/${p.lines}` : `Getting ready ${Math.floor(frac * 100)}%`;
-    } else if (p && p.ready) text = 'Voice ready (V)';
+    } else if (p && p.ready) text = S.rest && p.restTotal ? `Voice ready · rest ${p.restDone}/${p.restTotal}` : 'Voice ready (V)';
     label.textContent = text;
     pill.title = p ? `${p.pagesDone} / ${p.pages} pages read, ${p.linesDone} / ${p.lines} lines made` : '';
     bar.style.width = frac == null ? '0' : `${Math.max(3, frac * 100)}%`;
@@ -375,6 +378,92 @@
   drawPill();
   if (on) keepAwake(true);                                  // opens fully on the first click / key press
 
+
+  // ---------- the manga's info page: get its voices ready, chapter by chapter ----------
+  const infoId = () => { const m = /^\/manga\/([^/#?]+)/.exec(location.pathname); return m ? m[1] : null; };
+  let prep = null;              // {id, groups: [{id, name, chapters, start}], box, ...}
+
+  function startOf(chapters) {
+    // the chapter being read, else the one after the last tick, else the first
+    const sorted = [...chapters].sort((a, b) => a.number - b.number);
+    const done = sorted.filter((c) => c.progress && c.progress.frac >= 0.9);
+    const last = done.length ? done[done.length - 1].number : -1;
+    const next = sorted.find((c) => c.number > last);
+    return next ? next.number : null;                            // null: all of it is read
+  }
+  async function loadPrep(id) {
+    const [a, m] = await Promise.all([fetch(`/api/manga/allChapters?mangaId=${id}`).then((r) => r.json()), fetch(`/api/manga/page?id=${id}`).then((r) => r.json())]);
+    const names = {}; for (const s of (m.mangaPage && m.mangaPage.scanlators) || []) names[s.id] = s.name;
+    const by = {}; for (const c of a.chapters || []) (by[c.scanlationMangaId] = by[c.scanlationMangaId] || []).push(c);
+    const groups = Object.entries(by).map(([gid, chapters]) => ({ id: gid, name: names[gid] || 'Group', chapters, start: startOf(chapters),
+      read: chapters.filter((c) => c.progress).reduce((t, c) => Math.max(t, c.progress.ts || 0), 0) }));
+    // the group you've been reading, else the one with the most chapters
+    groups.sort((x, y) => y.read - x.read || y.chapters.length - x.chapters.length);
+    return groups;
+  }
+  function drawPrep() {
+    const id = infoId();
+    if (!id) { if (prep) { prep.box.remove(); prep = null; } return; }
+    if (prep && prep.id !== id) { prep.box.remove(); prep = null; }
+    if (prep) return;
+    const label = el('span', { textContent: 'Voices' }), bar = el('i', { id: 'avr-bar' });
+    const btn = el('button', { id: 'avr-pill', type: 'button' }, label, bar);
+    const group = el('select'), from = el('select');
+    const go = el('button', { type: 'button', className: 'avr-go', textContent: 'Get voices ready' });
+    const info = el('div', { className: 'avr-keys', textContent: '' });
+    const panel = el('div', { id: 'avr-panel', hidden: true }, el('div', { className: 'avr-h', textContent: 'Get this manga ready' }),
+      el('label', { className: 'avr-sel' }, el('span', { textContent: 'Group' }), group),
+      el('label', { className: 'avr-sel' }, el('span', { textContent: 'From' }), from), go, info);
+    const box = el('div', { id: 'avr-box' }, panel, btn);
+    document.body.appendChild(box);
+    prep = { id, box };
+    const me = prep;
+    btn.addEventListener('click', () => { panel.hidden = !panel.hidden; box.classList.toggle('avr-open', !panel.hidden); });
+    document.addEventListener('pointerdown', (e) => { if (!panel.hidden && !box.contains(e.target)) { panel.hidden = true; box.classList.remove('avr-open'); } }, true);
+    const cur = () => me.groups.find((g) => g.id === group.value);
+    const fillFrom = (start) => {
+      const g = cur(); from.replaceChildren();
+      for (const c of [...g.chapters].sort((a, b) => a.number - b.number)) from.append(el('option', { value: c.number, textContent: `Chapter ${c.number}${c.progress && c.progress.frac >= 0.9 ? ' ✓' : ''}` }));
+      const s = start != null ? start : g.start;
+      if (s != null) from.value = s;
+      const left = g.chapters.filter((c) => c.number >= Number(from.value)).length;
+      go.textContent = `Get ${left} chapter${left === 1 ? '' : 's'} ready`;
+    };
+    group.addEventListener('change', () => { fillFrom(); group.blur(); });
+    from.addEventListener('change', () => { fillFrom(Number(from.value)); from.blur(); });
+    let running = false;
+    go.addEventListener('click', async () => {
+      try {
+        if (running) await call('POST', '/prepare', { mangaId: id, stop: true });
+        else await call('POST', '/prepare', { mangaId: id, group: group.value, from: Number(from.value), own: { F: S.ownF, M: S.ownM } });
+        poll();
+      } catch (e) { helperProblem(e); }
+    });
+    const poll = async () => {
+      if (prep !== me) return;
+      try {
+        const r = await call('GET', `/prepared?mangaId=${id}`);
+        running = r.running;
+        if (r.total) {
+          label.textContent = r.done >= r.total ? 'Voices ready' : `Voices ${r.done}/${r.total}`;
+          bar.style.width = r.running ? `${Math.max(3, 100 * r.done / r.total)}%` : '0';
+          info.textContent = r.running ? `${r.done} of ${r.total} chapters ready. Keeps going if you close this tab.` : (r.done >= r.total ? 'All ready. Finished chapters are deleted as you read on.' : `${r.done} of ${r.total} chapters ready. Stopped.`);
+          btn.classList.toggle('avr-on', r.running || r.done >= r.total);
+        }
+        if (running) go.textContent = 'Stop'; else if (me.groups) fillFrom(Number(from.value));
+      } catch (e) { /* the helper isn't running: the button says so when pressed */ }
+      setTimeout(poll, running ? 4000 : 15000);
+    };
+    loadPrep(id).then((groups) => {
+      if (prep !== me) return;
+      me.groups = groups;
+      for (const g of groups) group.append(el('option', { value: g.id, textContent: `${g.name} (${g.chapters.length})` }));
+      fillFrom();
+      poll();
+    }).catch(() => { info.textContent = "Couldn't read this manga's chapters."; });
+  }
+  setInterval(drawPrep, 800);
+
   const css = document.createElement('style');
   css.textContent = `
     #avr-hl { position: fixed; z-index: 30; pointer-events: none; border-radius: 14px; display: none;
@@ -406,6 +495,9 @@
     #avr-panel label b { float: right; font-weight: 600; color: #c4b5fd; }
     #avr-panel input[type=range] { display: block; width: 100%; margin: 4px 0 0; accent-color: #a78bfa; }
     #avr-panel .avr-chk { display: flex; gap: 8px; align-items: center; }
+    #avr-panel .avr-go { display: block; width: 100%; margin-top: 12px; padding: 7px 10px; border: 0; border-radius: 9px; font: inherit; font-weight: 600;
+      color: #fff; background: rgba(124, 77, 210, .9); cursor: pointer; }
+    #avr-panel .avr-go:hover { background: rgba(139, 92, 246, 1); }
     #avr-panel .avr-sel { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     #avr-panel select { background: #2c2140; color: #ece6f8; border: 1px solid rgba(167, 139, 250, .4); border-radius: 8px;
       padding: 3px 6px; font: inherit; max-width: 150px; }

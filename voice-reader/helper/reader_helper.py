@@ -11,6 +11,8 @@ the line being read right now always first.
   GET  /bubbles?chapterId=..&page=N                           the page's speech bubbles once ready
   GET  /speak?voice=F|M|FO|MO&text=...[&now=1][&mood=]      the line spoken, as a wav (now=1: wanted this moment;
                                                               FO / MO = "My voice" from voices\female / male)
+  POST /prepare  {"mangaId", "group", "from", "own"} / {"mangaId", "stop": true}   get a manga ready from a chapter on, without the page
+  GET  /prepared?mangaId=..                                   how far that is
   GET  /voices                                                which "My voice" voices exist (made with Voice Maker)
   GET  /health
 
@@ -20,12 +22,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-VERSION = 'v21'
+VERSION = 'v24'
 LEAD_IN = 0.3                                # quiet before each line: Bluetooth headphones swallow the first moment
 TAIL = 0.12                                  # and a short breath after it
 PAGES_VERSION = 'v15'                          # the pages' cache (results of reading a page)
 VOICE_SET = 'kokoro1|af_bella 1.03 +1.8|am_echo 1.02 +0.5'   # change with reader_worker.VOICES: lines made again
-VOICE_MB = 400                               # the spoken lines kept on disk (oldest go first)
+VOICE_MB = 8000                              # the spoken lines kept on disk (oldest go first)
 PORT = int(os.environ.get('READER_PORT', '8795'))
 IDLE = int(os.environ.get('READER_IDLE', '300'))
 CACHE = os.path.join(HERE, 'cache')
@@ -235,7 +237,8 @@ def load_chapter(mid, cid, title):
     except Exception:
         pass
     chapters[cid] = {'mangaId': mid, 'title': ' | '.join(n for n in names if n), 'pages': rc['pages'], 'done': done,
-                     'start': 0, 'seen': time.time(), 'rtl': kind == 'manga', 'id': cid}
+                     'start': 0, 'seen': time.time(), 'rtl': kind == 'manga', 'id': cid,
+                     'number': rc.get('number'), 'group': rc.get('scanlationMangaId')}
     return chapters[cid]
 
 
@@ -251,7 +254,7 @@ def page_worker():
         _, cid, i = work.get()
         queued.discard((cid, i))
         ch = chapters.get(cid)
-        if not ch or i in ch['done']:
+        if not ch or i in ch['done'] or ch.get('halt'):
             continue
         try:
             img = ch['pages'][i]['image']
@@ -478,7 +481,7 @@ def voice_maker():
     while True:
         job = None
         for cid, ch in sorted(chapters.items(), key=lambda kv: -kv[1].get('seen', 0)):
-            if time.time() - ch.get('seen', 0) > 1800:          # not read for half an hour: leave it
+            if time.time() - ch.get('seen', 0) > 1800 or ch.get('halt'):   # not read for half an hour, or stopped: leave it
                 continue
             for t, v in lines(ch):
                 if not os.path.exists(voice_file(t, v)):
@@ -499,15 +502,133 @@ def voice_maker():
             time.sleep(5)
 
 
-def want(cid, start):
-    """read pages from `start` on first, then the ones before it"""
+def want(cid, start, later=0):
+    """read pages from `start` on first, then the ones before it (later: chapters got ready ahead wait behind)"""
     ch = chapters[cid]
+    ch['halt'] = False
     ch['start'], ch['seen'] = start, time.time()
     for i in range(len(ch['pages'])):
         if i in ch['done'] or (cid, i) in queued:
             continue
         queued.add((cid, i))
-        work.put(((i - start) if i >= start else 1000 + (start - i), cid, i))
+        work.put((later + ((i - start) if i >= start else 1000 + (start - i)), cid, i))
+
+
+# ---------- the rest of the manga, ahead of time ----------
+series = {}                   # mangaId -> {current, order: [(number, chapterId)], seen, own, on}
+AWAY = 1800                   # no word from the page for this long (tab closed, reader off): stop; it carries on next time
+
+
+def chapter_order(mid, ch):
+    """the manga's chapters in order, from the same scanlation group as the one being read"""
+    all_ = json.loads(get(f'https://atsu.moe/api/manga/allChapters?mangaId={urllib.parse.quote(mid)}'))['chapters']
+    same = [c for c in all_ if c.get('scanlationMangaId') == ch.get('group')] or all_
+    seen, out = set(), []
+    for c in sorted(same, key=lambda c: (c.get('number') or 0, c.get('index') or 0)):
+        if c.get('number') not in seen:
+            seen.add(c.get('number')); out.append((c.get('number') or 0, c['id']))
+    return out
+
+
+def is_ready(ch):
+    return len(ch['done']) >= len(ch['pages']) and progress(ch)['ready']
+
+
+def rest_of(s):
+    """the chapters after the one being read: (those ready, how many)"""
+    cur = chapters.get(s['current'])
+    if not cur:
+        return 0, 0
+    after = [cid for n, cid in s['order'] if n > (cur.get('number') or 0)]
+    return sum(1 for cid in after if cid in s['ready']), len(after)
+
+
+def forget_finished(mid, s):
+    """chapters before the one being read are finished: their spoken lines and read pages go (lines the coming chapters share stay)"""
+    cur = chapters.get(s['current'])
+    if not cur:
+        return
+    before = [cid for n, cid in s['order'] if n < (cur.get('number') or 0) and (cid in chapters or os.path.exists(cache_path(cid)))]
+    if not before:
+        return
+    keep = set()
+    for c in chapters.values():
+        if c.get('mangaId') == mid and (c.get('number') or 0) >= (cur.get('number') or 0):
+            keep |= {voice_file(t, v) for t, v in lines(c)}
+    gone = 0
+    for cid in before:
+        try:
+            ch = load_chapter(mid, cid, '')
+            ch['own'] = s['own']
+            for t, v in lines(ch):
+                f = voice_file(t, v)
+                if f not in keep and os.path.exists(f):
+                    os.remove(f); gone += 1
+            chapters.pop(cid, None); s['ready'].discard(cid)
+            if os.path.exists(cache_path(cid)):
+                os.remove(cache_path(cid))
+        except Exception:
+            log('forget failed', cid, traceback.format_exc(limit=2))
+    log(f'{mid}: {len(before)} finished chapter(s) forgotten, {gone} spoken lines deleted')
+
+
+def prepared(mid):
+    s = series.get(mid)
+    if not s or not s.get('order'):
+        return {'running': bool(s and s.get('pinned')), 'done': 0, 'total': 0}
+    cur = chapters.get(s.get('current'))
+    floor = cur.get('number') or 0 if cur else s.get('from', 0)
+    want_ = [cid for n, cid in s['order'] if n >= floor]
+    return {'running': bool(s.get('pinned')), 'done': sum(1 for c in want_ if c in s['ready']), 'total': len(want_), 'group': s.get('group'), 'from': s.get('from')}
+
+
+def follow(mid, cid, own, on):
+    """the page is reading this chapter"""
+    s = series.setdefault(mid, {'order': [], 'ready': set(), 'at': 0})
+    moved = s.get('current') != cid
+    s.update(current=cid, seen=time.time(), own=own, on=on)
+    if moved or time.time() - s['at'] > 600:
+        def work():
+            try:
+                s['order'] = chapter_order(mid, chapters[cid]); s['at'] = time.time()
+                if on:
+                    forget_finished(mid, s)
+            except Exception:
+                log('chapter list failed', mid, traceback.format_exc(limit=2))
+        threading.Thread(target=work, daemon=True).start()
+
+
+def planner():
+    """one chapter at a time, in order, once the one being read is ready"""
+    while True:
+        time.sleep(3)
+        for mid, s in list(series.items()):
+            try:
+                cur = chapters.get(s.get('current'))
+                here = time.time() - s.get('seen', 0) <= AWAY
+                if not s.get('on') or not s['order'] or not (s.get('pinned') or (cur and here)):
+                    continue
+                if cur and here and not is_ready(cur):
+                    continue                                 # the chapter being read comes first
+                if cur:
+                    s['ready'].add(cur['id'])
+                floor = cur.get('number') or 0 if cur else s.get('from', 0)
+                for n, cid in s['order']:
+                    if n < floor or (cur and n == floor) or cid in s['ready']:
+                        continue
+                    ch = chapters.get(cid) or load_chapter(mid, cid, '')
+                    ch['own'] = s['own']; ch['seen'] = time.time() - 1; ch['halt'] = False      # just behind the one being read
+                    if is_ready(ch):
+                        s['ready'].add(cid); log(f'{mid}: chapter {n} ready ahead')
+                        continue
+                    if not any(q[0] == cid for q in queued):
+                        want(cid, 0, later=100000)
+                    break
+                else:
+                    if s.get('pinned'):
+                        s['pinned'] = False; log(f'{mid}: every chapter asked for is ready')
+            except Exception:
+                log('planner', mid, traceback.format_exc(limit=2)); time.sleep(20)
 
 
 # ---------- the little web server ----------
@@ -527,6 +648,8 @@ class H(BaseHTTPRequestHandler):
         try:
             if u.path == '/health':
                 return self._send(200, {'ok': True, 'version': VERSION, 'workers': {w.kind: w.alive() for w in (pages_w, voice_w, own_w)}})
+            if u.path == '/prepared':
+                return self._send(200, prepared(q.get('mangaId', '')))
             if u.path == '/voices':
                 return self._send(200, {k[0]: (lambda m: m and {'clips': len(m['clips']), 'secs': round(sum(c['secs'] for c in m['clips']), 1),
                                                                  'moods': sorted(set(c['mood'] for c in m['clips']))})(own_voice(k)) for k in OWN})
@@ -535,7 +658,11 @@ class H(BaseHTTPRequestHandler):
                 if not ch:
                     return self._send(404, {'error': 'chapter not started'})
                 ch['seen'] = time.time()
-                return self._send(200, progress(ch))
+                s = series.get(ch.get('mangaId'))
+                if s and s.get('current') == ch.get('id'):
+                    s['seen'] = time.time()
+                done, total = rest_of(s) if s else (0, 0)
+                return self._send(200, {**progress(ch), 'restDone': done, 'restTotal': total})
             if u.path == '/bubbles':
                 cid, i = q['chapterId'], int(q['page'])
                 ch = chapters.get(cid)
@@ -560,9 +687,23 @@ class H(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         try:
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
+            if u.path == '/prepare':
+                mid = body['mangaId']
+                s = series.setdefault(mid, {'order': [], 'ready': set(), 'at': 0})
+                if body.get('stop'):
+                    s.update(pinned=False, on=False)
+                    for c in chapters.values():
+                        if c.get('mangaId') == mid and c.get('id') != s.get('current'):
+                            c['halt'] = True
+                    return self._send(200, prepared(mid))
+                s.update(pinned=True, on=True, current=None, own=body.get('own') or {}, group=body.get('group'), seen=time.time(), **{'from': float(body.get('from') or 0)})
+                s['order'] = chapter_order(mid, {'group': body.get('group')}); s['at'] = time.time()
+                log(f"{mid}: getting ready from chapter {s['from']} on ({sum(1 for n, _ in s['order'] if n >= s['from'])} chapters)")
+                return self._send(200, prepared(mid))
             if u.path == '/chapter':
                 ch = load_chapter(body['mangaId'], body['chapterId'], body.get('title', ''))
                 ch['own'] = body.get('own') or {}
+                follow(body['mangaId'], body['chapterId'], ch['own'], body.get('rest', True))
                 want(body['chapterId'], int(body.get('page', 0)))
                 return self._send(200, {'pages': len(ch['pages']), 'ready': sorted(ch['done'])})
             return self._send(404, {'error': 'unknown'})
@@ -581,6 +722,7 @@ def main():
         log('already running'); return                       # one copy only
     threading.Thread(target=page_worker, daemon=True).start()
     threading.Thread(target=voice_maker, daemon=True).start()
+    threading.Thread(target=planner, daemon=True).start()
     log(f'started {VERSION} on 127.0.0.1:{PORT}')
     srv.serve_forever()
 

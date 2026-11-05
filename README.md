@@ -24,6 +24,8 @@ Early and still improving: expect some wrong voices and misread words.
 
 **Use:** open a chapter and press **V**. A small speaker icon sits bottom right: hover it for progress and the settings gear.
 
+**No waiting:** on a manga's page, click **Voices** (bottom right) to get its chapters ready ahead. It starts after your last read chapter, in the group you read. While you read, the next chapters get ready too, and finished ones are deleted.
+
 | Key | |
 |---|---|
 | V | Voice on / off |
