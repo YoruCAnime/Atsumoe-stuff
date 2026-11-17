@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Atsu → AniList Sync
 // @namespace    https://atsu.moe/
-// @version      1.1.0
+// @version      1.1.1
 // @description  AniList tracker for the mobile Firefox browser on atsu.moe and hiperdex.com: a reading line along the bottom of the reader, and once you have read 85% of a chapter your AniList progress goes up (it shows in your AniList activity). Tap the line to update by hand, fix the match or change the settings.
 // @author       YoruC
 // @homepageURL  https://github.com/YoruCAnime/Atsumoe-stuff
@@ -58,7 +58,7 @@
    *  the "Read chapter N of ..." activity, same as on the site.
    * ==================================================================== */
 
-  const VERSION = '1.1.0';
+  const VERSION = '1.1.1';
   const HIPER = /(^|\.)hiperdex\.com$/.test(location.hostname);
   const SITE = HIPER ? 'hiperdex.com' : 'atsu.moe';
   const API = 'https://graphql.anilist.co';
@@ -141,6 +141,8 @@
   const Q_MEDIA = `query ($id: Int) { Media(id: $id, type: MANGA) { ${MEDIA_FIELDS} mediaListEntry { ${ENTRY_FIELDS} } } }`;
   const Q_MAL = 'query ($mal: Int) { Media(idMal: $mal, type: MANGA) { id } }';
   const Q_SEARCH = `query ($s: String) { Page(perPage: 12) { media(search: $s, type: MANGA, sort: SEARCH_MATCH) { ${MEDIA_FIELDS} synonyms startDate { year } } } }`;
+  // the same with your list entry, so a series already on your list wins over others of the same name
+  const Q_SEARCH_ME = `query ($s: String) { Page(perPage: 12) { media(search: $s, type: MANGA, sort: SEARCH_MATCH) { ${MEDIA_FIELDS} synonyms startDate { year } mediaListEntry { status } } } }`;
   const Q_VIEWER = 'query { Viewer { id name } }';
   const M_SAVE = 'mutation ($mediaId: Int, $status: MediaListStatus, $progress: Int, $repeat: Int, ' +
     '$startedAt: FuzzyDateInput, $completedAt: FuzzyDateInput) { SaveMediaListEntry(mediaId: $mediaId, ' +
@@ -275,7 +277,7 @@
     const id = 'hiper:' + slug;
     const cache = gv('series', {}) || {};
     const c = cache[id];
-    if (c && Date.now() - c.at < 3 * 86400000) return c;
+    if (c && c.v === 3 && Date.now() - c.at < 3 * 86400000) return c;
     const j = await atsu('/api/trpc/series.bySlug?input=' + encodeURIComponent(JSON.stringify({ json: { slug } })));
     const p = (j && j.result && j.result.data && j.result.data.json) || {};
     if (!p.title) throw err('atsu', 'hiperdex did not give this series');
@@ -283,7 +285,8 @@
     try { other = typeof p.alternativeTitles === 'string' ? JSON.parse(p.alternativeTitles) : (p.alternativeTitles || []); } catch (e) { /* not a list */ }
     const s = {
       id, title: String(p.title), en: '', other: (Array.isArray(other) ? other : []).map(String).filter(Boolean).slice(0, 12),
-      al: 0, mal: 0, medium: /novel/i.test(p.type || '') ? 'Novel' : '', at: Date.now()
+      al: 0, mal: 0, medium: /novel/i.test(p.type || '') ? 'Novel' : '',
+      year: +p.year || 0, ongoing: /ongoing|releasing|publishing/i.test(p.status || '') ? 1 : /complete|finish/i.test(p.status || '') ? -1 : 0, v: 3, at: Date.now()
     };
     cache[id] = s;
     sv('series', prune(cache, 150));
@@ -338,31 +341,51 @@
   const norm = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[’'`]/g, '').replace(/[^a-z0-9\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+/g, ' ').trim();
 
-  function bestMatch(list, s) {
-    const names = new Set([s.title, s.en].concat(s.other || []).map(norm).filter(Boolean));
+  // Every AniList entry with one of the series' names; when several share a name (Overgeared: a 2016 webtoon of
+  // 24 chapters and the 2020 one), the one that fits best: not shorter than the chapter you are on, the same
+  // start year as the site says, still running when the site says ongoing. Ties keep AniList's search order.
+  // names compared without spaces too: "Ijimekko-tachi" on the site is "Ijimekkotachi" on AniList
+  const tight = s => norm(s).replace(/ /g, '');
+  function bestMatch(list, s, n) {
+    const names = new Set([s.title, s.en].concat(s.other || []).map(tight).filter(Boolean));
     const novel = s.medium === 'Novel';
-    for (const m of list) {
-      if ((m.format === 'NOVEL') !== novel) continue;
+    let best = null, bestScore = -1e9;
+    list.forEach((m, i) => {
+      if ((m.format === 'NOVEL') !== novel) return;
       const al = [m.title.userPreferred, m.title.romaji, m.title.english, m.title.native].concat(m.synonyms || []);
-      if (al.map(norm).some(n => n && names.has(n))) return m;
-    }
-    return null;
+      if (!al.map(tight).some(x => x && names.has(x))) return;
+      // never one that cannot be it: shorter than the chapter you are on, or a finished one-shot of an ongoing series
+      if (n > 0 && m.chapters > 0 && n > m.chapters + 1) return;
+      if (s.ongoing === 1 && m.status === 'FINISHED' && m.chapters > 0 && m.chapters <= 1) return;
+      let sc = -i;
+      if (m.mediaListEntry) sc += 1000;
+      const y = m.startDate && m.startDate.year;
+      if (s.year && y) sc += s.year === y ? 100 : Math.abs(s.year - y) === 1 ? 50 : 0;
+      if (s.ongoing === 1 && m.status === 'RELEASING') sc += 20;
+      if (s.ongoing === -1 && m.status === 'FINISHED') sc += 20;
+      if (sc > bestScore) { best = m; bestScore = sc; }
+    });
+    return best;
   }
 
-  async function searchAl(text) {
-    const d = await api(Q_SEARCH, { s: text }, '');
+  async function searchAl(text, me) {
+    const tok = me ? getToken() : '';
+    let d;
+    if (tok) { try { d = await gql(Q_SEARCH_ME, { s: text }, tok); } catch (e) { d = null; } }
+    if (!d) d = await api(Q_SEARCH, { s: text }, '');
     return (d.Page && d.Page.media) || [];
   }
 
   // -> {id, how} | {off:true} | {none:true}
-  async function resolveId(s) {
+  async function resolveId(s, n) {
     const map = gv('map', {}) || {};
     const ov = map[s.id];
     if (ov === -1) return { off: true };
     if (ov > 0) return { id: ov, how: 'you' };
     if (s.al) return { id: s.al, how: 'atsu' };
     const found = (gv('found', {}) || {})[s.id];
-    if (found && found.id) return { id: found.id, how: 'title search' };
+    // hiperdex matches from 1.1.0 took the first entry of a shared name: those are looked up again (v3 = 1.1.1)
+    if (found && found.id && (found.v === 3 || s.id.indexOf('hiper:') !== 0)) return { id: found.id, how: 'title search' };
     let id = 0, how = '';
     if (s.mal) {
       try { const d = await api(Q_MAL, { mal: s.mal }, ''); if (d.Media) { id = d.Media.id; how = 'MyAnimeList id'; } } catch (e) {
@@ -373,13 +396,13 @@
       // the main name first; hiperdex's other names only when that finds nothing (2 more searches at most)
       const tries = [s.title || s.en].concat(s.id.indexOf('hiper:') === 0 ? (s.other || []).filter(n => /[a-z]/i.test(n)).slice(0, 2) : []);
       for (const q of tries) {
-        const b = bestMatch(await searchAl(q.replace(/[‘’`´]/g, "'")), s);
+        const b = bestMatch(await searchAl(q.replace(/[‘’`´]/g, "'"), true), s, n);
         if (b) { id = b.id; how = 'title search'; break; }
       }
     }
     if (!id) return { none: true };
     const f = gv('found', {}) || {};
-    f[s.id] = { id, at: Date.now() };
+    f[s.id] = { id, v: 3, at: Date.now() };
     sv('found', prune(f, 300));
     return { id, how };
   }
@@ -501,7 +524,7 @@
 
   async function matchAndLoad(c) {
     setState(c, 'load', 'Finding it on AniList...');
-    const r = await resolveId(c.series);
+    const r = await resolveId(c.series, c.number);
     if (r.off) return setState(c, 'off', 'You turned tracking off for this series');
     if (r.none) return setState(c, 'warn', 'No AniList match found - tap to pick it', 'match');
     c.alId = r.id; c.how = r.how;
