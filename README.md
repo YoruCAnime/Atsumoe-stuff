@@ -5,7 +5,7 @@ Plugins for [atsu.moe](https://atsu.moe), and one for hiperdex.com that works to
 | Plugin | What it does | Install |
 |---|---|---|
 | **Voice Reader** | Voiced manga and manhwa reader: speech bubbles read aloud | [install](https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/voice-reader/atsu-voice-reader.user.js) + setup below |
-| **AniList Tracker** | AniList tracker for the mobile Firefox browser: updates your AniList at 85% of a chapter | [install](https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/anilist-tracker/atsu-anilist-tracker.user.js) + steps below |
+| **AniList Tracker** | AniList tracker for the mobile Firefox browser on atsu and hiperdex: updates your AniList at 85% of a chapter | [install](https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/anilist-tracker/atsu-anilist-tracker.user.js) + steps below |
 | Comfy Reader | Smooth arrow-key scrolling | [install](https://raw.githubusercontent.com/YoruCAnime/Anime-site-scripts/main/atsumoe/atsu-comfy-reader.user.js) |
 | Next Chapters | New-chapter countdown on the home page | [install](https://raw.githubusercontent.com/YoruCAnime/Anime-site-scripts/main/atsumoe/atsu-next-chapters.user.js) |
 | **Hiperdex Comfy Reader** | For hiperdex.com (PC and phone): no ads or pop-ups, atsu-style home page, auto-scroll, reading saved to atsu | [install](https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/hiperdex/hiperdex-comfy.user.js) + steps below |
@@ -52,6 +52,8 @@ AniList tracker for the mobile Firefox browser, by YoruC. A thin line along the 
 > 4. Open a chapter, scroll a little, tap **! Connect AL** at the bottom left and follow the steps (one time).
 
 Your AniList login stays in Tampermonkey on your phone. atsu's own AniList sync can stay on: chapters AniList already has are skipped.
+
+**hiperdex.com too:** chapters there update AniList the same way (one login for both sites). hiperdex has no AniList link, so the series is found on AniList by its name; if it picks the wrong one or none, tap the line and **Change match**. On a series page an **Add to AniList** button sits after Favorite: one tap adds the series as Reading, at the last chapter you read there (with Hiperdex Comfy Reader installed). Once it is on your list the button shows your status and chapter; tap it for the panel.
 
 ## Hiperdex Comfy Reader
 

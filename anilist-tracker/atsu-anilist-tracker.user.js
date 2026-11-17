@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         Atsu → AniList Sync
 // @namespace    https://atsu.moe/
-// @version      1.0.3
-// @description  AniList tracker for the mobile Firefox browser on atsu.moe: a reading line along the bottom of the reader, and once you have read 85% of a chapter your AniList progress goes up (it shows in your AniList activity). Tap the line to update by hand, fix the match or change the settings.
+// @version      1.1.0
+// @description  AniList tracker for the mobile Firefox browser on atsu.moe and hiperdex.com: a reading line along the bottom of the reader, and once you have read 85% of a chapter your AniList progress goes up (it shows in your AniList activity). Tap the line to update by hand, fix the match or change the settings.
 // @author       YoruC
 // @homepageURL  https://github.com/YoruCAnime/Atsumoe-stuff
 // @updateURL    https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/anilist-tracker/atsu-anilist-tracker.user.js
 // @downloadURL  https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/anilist-tracker/atsu-anilist-tracker.user.js
 // @match        https://atsu.moe/*
+// @match        https://hiperdex.com/*
 // @match        https://anilist.co/api/v2/oauth/pin*
 // @run-at       document-idle
 // @noframes
@@ -42,12 +43,24 @@
    *    can stay on: this script reads your AniList entry before it writes
    *    and skips chapters AniList already has.
    *
+   *  hiperdex.com (added 2026-11-17):
+   *
+   *  - Chapters are /manga/<slug>/<number> (a React app as well). The series
+   *    comes from its own /api/trpc/series.bySlug (title, alternativeTitles);
+   *    there is no AniList id, so the series is found by an AniList search
+   *    that must match one of its names exactly ("Pick match" fixes misses).
+   *  - The reader draws a box for every page at once and fills in the
+   *    pictures over the first seconds, so nothing is measured until every
+   *    box has its picture (else the first 4 pages would count as the chapter).
+   *
    *  AniList: graphql.anilist.co allows 30 requests a minute right now; a
    *  chapter costs 2 (read the entry, save it). Saving progress is what makes
    *  the "Read chapter N of ..." activity, same as on the site.
    * ==================================================================== */
 
-  const VERSION = '1.0.3';
+  const VERSION = '1.1.0';
+  const HIPER = /(^|\.)hiperdex\.com$/.test(location.hostname);
+  const SITE = HIPER ? 'hiperdex.com' : 'atsu.moe';
   const API = 'https://graphql.anilist.co';
   const PIN = 'https://anilist.co/api/v2/oauth/pin';
   const DEV = 'https://anilist.co/settings/developer';
@@ -206,19 +219,21 @@
 
   function pinBanner() {
     const back = gv('returnUrl', '') || 'https://atsu.moe/';
+    let backName = 'atsu.moe';
+    try { backName = new URL(back).hostname.replace(/^www\./, ''); } catch (e) { /* keep atsu.moe */ }
     const box = document.createElement('div');
     box.style.cssText = 'position:fixed;left:12px;right:12px;top:12px;z-index:2147483647;max-width:520px;margin:0 auto;' +
       'background:#161a23;color:#e7ebf2;border:1px solid rgba(255,255,255,.1);border-radius:14px;padding:16px;' +
       'font:15px/1.45 system-ui,-apple-system,Roboto,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.5)';
-    box.innerHTML = '<div style="font-weight:700;font-size:16px;margin-bottom:4px">atsu.moe is connected to AniList</div>' +
+    box.innerHTML = '<div style="font-weight:700;font-size:16px;margin-bottom:4px">' + esc(backName) + ' is connected to AniList</div>' +
       '<div class="who" style="color:#98a2b3">Checking your account...</div>' +
       '<a style="display:flex;align-items:center;justify-content:center;min-height:46px;margin-top:12px;border-radius:12px;' +
-      'background:#3db4f2;color:#08131c;font-weight:700;text-decoration:none" href="' + esc(back) + '">Back to atsu.moe</a>';
+      'background:#3db4f2;color:#08131c;font-weight:700;text-decoration:none" href="' + esc(back) + '">Back to ' + esc(backName) + '</a>';
     document.body.appendChild(box);
     const who = box.querySelector('.who');
     gql(Q_VIEWER, {}, getToken()).then(d => {
       sv('viewer', { id: d.Viewer.id, name: d.Viewer.name });
-      who.textContent = 'Signed in as ' + d.Viewer.name + '. Chapters you read on atsu.moe now update your list.';
+      who.textContent = 'Signed in as ' + d.Viewer.name + '. Chapters you read on atsu.moe and hiperdex.com now update your list.';
     }).catch(e => { who.textContent = 'Login saved. (Could not check the account just now: ' + e.message + ')'; });
     sv('returnUrl', '');
   }
@@ -253,6 +268,41 @@
     cache[id] = s;
     sv('series', prune(cache, 150));
     return s;
+  }
+
+  // hiperdex: the series from its own API (no AniList id: matched by name)
+  async function hiperSeries(slug) {
+    const id = 'hiper:' + slug;
+    const cache = gv('series', {}) || {};
+    const c = cache[id];
+    if (c && Date.now() - c.at < 3 * 86400000) return c;
+    const j = await atsu('/api/trpc/series.bySlug?input=' + encodeURIComponent(JSON.stringify({ json: { slug } })));
+    const p = (j && j.result && j.result.data && j.result.data.json) || {};
+    if (!p.title) throw err('atsu', 'hiperdex did not give this series');
+    let other = [];
+    try { other = typeof p.alternativeTitles === 'string' ? JSON.parse(p.alternativeTitles) : (p.alternativeTitles || []); } catch (e) { /* not a list */ }
+    const s = {
+      id, title: String(p.title), en: '', other: (Array.isArray(other) ? other : []).map(String).filter(Boolean).slice(0, 12),
+      al: 0, mal: 0, medium: /novel/i.test(p.type || '') ? 'Novel' : '', at: Date.now()
+    };
+    cache[id] = s;
+    sv('series', prune(cache, 150));
+    return s;
+  }
+
+  // hiperdex: the furthest chapter of this series you read past the update point, from Hiperdex Comfy Reader's
+  // reading spots (localStorage hdc:v1, kept on this phone / browser); 0 when it is not installed or nothing read
+  function hiperLastRead(slugRaw) {
+    let spots = {};
+    try { spots = (JSON.parse(localStorage.getItem('hdc:v1') || '{}') || {}).spot || {}; } catch (e) { return 0; }
+    let best = 0;
+    for (const k of Object.keys(spots)) {
+      const i = k.lastIndexOf('/');
+      if (i < 0 || k.slice(0, i) !== slugRaw) continue;
+      const n = parseFloat(k.slice(i + 1)), sp = spots[k];
+      if (isFinite(n) && sp && sp.f * 100 + 1e-9 >= cfg.threshold && n > best) best = n;
+    }
+    return best;
   }
 
   async function getChapter(mangaId, chapterId) {
@@ -320,8 +370,12 @@
       }
     }
     if (!id) {
-      const b = bestMatch(await searchAl(s.title || s.en), s);
-      if (b) { id = b.id; how = 'title search'; }
+      // the main name first; hiperdex's other names only when that finds nothing (2 more searches at most)
+      const tries = [s.title || s.en].concat(s.id.indexOf('hiper:') === 0 ? (s.other || []).filter(n => /[a-z]/i.test(n)).slice(0, 2) : []);
+      for (const q of tries) {
+        const b = bestMatch(await searchAl(q.replace(/[‘’`´]/g, "'")), s);
+        if (b) { id = b.id; how = 'title search'; break; }
+      }
     }
     if (!id) return { none: true };
     const f = gv('found', {}) || {};
@@ -387,6 +441,23 @@
     };
   }
 
+  // hiperdex series page, the Add to AniList button: a series not on the list goes in as Reading, at the last
+  // chapter you read here (if any); one already on the list moves up to that chapter, else it just shows it.
+  function seriesPlan(c) {
+    const n = chOf(c), e = c.entry;
+    if (!e) {
+      const v = { mediaId: c.media.id, status: 'CURRENT', startedAt: today() };
+      if (n >= 1) v.progress = n;
+      return { vars: v, label: 'Add to AniList as Reading' + (n >= 1 ? ' at ch ' + n : ''), done: 'added to Reading' + (n >= 1 ? ' at ch ' + n : '') };
+    }
+    if (n >= 1 && e.status !== 'COMPLETED') {
+      const p = makePlan(c, 'manual');
+      if (!p.skip) return p;
+    }
+    return { skip: 'On your AniList: ' + (STATUS[e.status] || e.status) + ' · ch ' + (e.progress || 0), already: true };
+  }
+  const planFor = (c, mode, force) => c.kind === 'hseries' ? seriesPlan(c) : makePlan(c, mode, force);
+
   /* ------------------------------------------------------------------ */
   /*  The chapter on screen                                              */
   /* ------------------------------------------------------------------ */
@@ -395,6 +466,13 @@
   let seq = 0;        // bumps on every chapter change; drops answers for a chapter we left
 
   function parsePath() {
+    if (HIPER) {
+      const h = /^\/manga\/([^/]+)(?:\/(\d+(?:\.\d+)?))?\/?$/.exec(location.pathname);
+      if (!h) return null;
+      const slug = decodeURIComponent(h[1]);
+      return h[2] ? { kind: 'hiper', slug, slugRaw: h[1], num: +h[2], mangaId: 'hiper:' + slug, chapterId: h[2], key: h[1] + '/' + h[2] }
+        : { kind: 'hseries', slug, slugRaw: h[1], mangaId: 'hiper:' + slug, chapterId: '', key: 's/' + h[1] };
+    }
     const m = /^\/(read|novel)\/([^/]+)\/([^/?#]+)/.exec(location.pathname);
     return m ? { kind: m[1], mangaId: decodeURIComponent(m[2]), chapterId: decodeURIComponent(m[3]), key: m[2] + '/' + m[3] } : null;
   }
@@ -408,7 +486,13 @@
     });
     render();
     const c = cur;
-    Promise.all([getChapter(p.mangaId, p.chapterId), getSeries(p.mangaId)]).then(([ch, s]) => {
+    const hiperCh = () => {
+      const n = p.kind === 'hiper' ? p.num : hiperLastRead(p.slugRaw);
+      return { number: n, title: p.kind === 'hiper' ? 'Chapter ' + fmtNum(n) : n ? 'Read here up to ch ' + fmtNum(n) : 'Nothing read here yet', pages: 0, pageSet: null };
+    };
+    const load = p.kind === 'hiper' || p.kind === 'hseries' ? Promise.all([hiperCh(), hiperSeries(p.slug)])
+      : Promise.all([getChapter(p.mangaId, p.chapterId), getSeries(p.mangaId)]);
+    load.then(([ch, s]) => {
       if (my !== seq) return;
       Object.assign(c, { number: ch.number, chTitle: ch.title, pages: ch.pages, pageSet: ch.pageSet, series: s });
       return matchAndLoad(c);
@@ -446,12 +530,16 @@
   function refreshPlan(c) {
     if (c.busy) return;
     if (!c.media) return;
-    if (c.synced) return setState(c, 'ok', 'AniList has ch ' + chOf(c));
+    if (c.synced && c.kind !== 'hseries') return setState(c, 'ok', 'AniList has ch ' + chOf(c));
     if (c.loginErr && getToken()) {
       return setState(c, 'warn', 'AniList did not accept your login (' + c.loginErr + '). Tap Connect AniList to log in again.', 'connect');
     }
     if (!getToken()) {
       return setState(c, 'warn', loginMsg() + (queued(c) ? ' - this chapter is saved for later' : ''), 'connect');
+    }
+    if (c.kind === 'hseries') {
+      const sp = seriesPlan(c);
+      return setState(c, sp.skip ? 'ok' : 'ready', sp.skip || sp.label);
     }
     const plan = makePlan(c, 'auto');
     if (plan.skip) return setState(c, plan.already ? 'ok' : 'idle', plan.skip);
@@ -503,6 +591,8 @@
 
   // atsu's own position (the #rs= hash) first; it does not depend on how the pictures are filed
   function measure(c) {
+    if (c.kind === 'hseries') return 0;
+    if (c.kind === 'hiper') return hiperMeasure(c);
     if (Date.now() - c.openedAt < 1200 || c.number == null) return 0;
     if (c.kind === 'novel') return clamp(scrollFrac());
     // a hash left over from the chapter before means nothing until it changes
@@ -515,6 +605,19 @@
     return clamp(v);
   }
   const clamp = v => Math.min(1, Math.max(0, v || 0));
+
+  // hiperdex: the page boxes (the box of "Page 1" and every box built like it), only once all have a picture
+  function hiperMeasure(c) {
+    if (Date.now() - c.openedAt < 2500) return 0;            // the chapter before may still be in the page
+    const first = document.querySelector('img[alt^="Page "]');
+    const wrap = first && first.parentElement, list = wrap && wrap.parentElement && wrap.parentElement.parentElement;
+    if (!list) return 0;
+    const bs = [];
+    for (const x of list.children) { const d = x.firstElementChild; if (d && d.className === wrap.className) bs.push(d); }
+    if (!bs.length || !bs.every(b => b.querySelector('img[alt^="Page "]'))) return 0;
+    const d = stripFrac(bs);
+    return clamp(d != null ? d : 0);
+  }
 
   /* --- saving -------------------------------------------------------- */
 
@@ -529,7 +632,7 @@
         const d = await api(Q_MEDIA, { id: c.alId }, tok);
         c.media = d.Media; c.entry = d.Media.mediaListEntry || null; c.entryAt = Date.now();
       }
-      const plan = makePlan(c, mode, force);
+      const plan = planFor(c, mode, force);
       if (plan.skip) {
         c.busy = false;
         if (plan.already) { c.synced = true; dropPending(c.alId, chOf(c)); }
@@ -741,10 +844,57 @@ code{background:#0f1218;border-radius:6px;padding:2px 6px;font-size:12.5px;word-
     }
   }
 
+  // hiperdex series pages: an AniList button in the page's own button row (after Favorite). Not on your list:
+  // one tap adds it as Reading (at the last chapter you read here), with Undo. On your list: status + chapter,
+  // a tap opens the panel. No match / not connected: a tap opens the match search / the connect steps.
+  let pageBtn = null;
+  function btnText(c) {
+    if (c.media && !getToken()) return 'Connect AniList';
+    switch (c.state) {
+      case 'load': case 'busy': return 'AniList…';
+      case 'off': return 'AniList: off';
+      case 'err': return 'AniList: error';
+      case 'warn': return c.why === 'match' ? 'Find on AniList' : c.why === 'connect' ? 'Connect AniList' : 'AniList…';
+    }
+    const e = c.entry;
+    if (e === null) return '+ Add to AniList';
+    if (e) return 'AniList: ' + (STATUS[e.status] || e.status) + ' · ch ' + (e.progress || 0);
+    return 'AniList';
+  }
+  function syncPageBtn() {
+    const c = cur;
+    if (!(c && c.kind === 'hseries')) { if (pageBtn) { pageBtn.remove(); pageBtn = null; } return; }
+    if (!pageBtn || !pageBtn.isConnected) {
+      const fav = [...document.querySelectorAll('button')].find(b => /^\s*Favou?rite[ds]?\s*$/i.test(b.textContent || ''));
+      const row = fav && fav.parentElement;
+      if (!row) return;                                      // the site has not drawn its buttons yet
+      if (!pageBtn) {
+        pageBtn = document.createElement('button');
+        pageBtn.type = 'button'; pageBtn.id = 'aas-page-btn'; pageBtn.title = 'Atsu → AniList Sync';
+        pageBtn.addEventListener('click', e => {
+          e.preventDefault(); e.stopPropagation();
+          const k = cur;
+          if (!k || k.busy || k.kind !== 'hseries') return;
+          if (k.state === 'ready' && k.entry === null && getToken()) doSync(k, 'manual'); else openSheet();
+        });
+      }
+      // the Favorite button's shape, without its own hover / pressed colours (red)
+      pageBtn.className = String(fav.className).split(/\s+/)
+        .filter(k => k && !/^(hover|focus|active|group-hover|aria-|data-)/.test(k) && !/red|rose|pink/.test(k)).join(' ');
+      pageBtn.style.cursor = 'pointer';
+      const kids = [...row.children].filter(k => k !== pageBtn && (k.tagName === 'BUTTON' || k.querySelector('button')));
+      const last = kids[kids.length - 1] || fav;
+      row.insertBefore(pageBtn, last.nextSibling);
+    }
+    const t = btnText(c);
+    if (pageBtn.textContent !== t) pageBtn.textContent = t;
+  }
+
   function render() {
     ensureUi();
+    syncPageBtn();
     const c = cur;
-    el.bar.hidden = !c;
+    el.bar.hidden = !c || c.kind === 'hseries';
     if (c) {
       const color = COLORS[c.state] || COLORS.load;
       el.bar.style.setProperty('--c', color);
@@ -832,7 +982,8 @@ code{background:#0f1218;border-radius:6px;padding:2px 6px;font-size:12.5px;word-
 
       const e = c.entry;
       h += '<div class="info">';
-      h += '<div class="row"><span class="k">Reading</span><span class="v">' + esc(c.chTitle || 'Chapter ' + fmtNum(c.number)) +
+      h += c.kind === 'hseries' ? '<div class="row"><span class="k">On ' + SITE + '</span><span class="v">' + esc(c.chTitle || '') + '</span></div>'
+        : '<div class="row"><span class="k">Reading</span><span class="v">' + esc(c.chTitle || 'Chapter ' + fmtNum(c.number)) +
         ' · ' + Math.round(c.peak * 100) + '%</span></div>';
       h += '<div class="row"><span class="k">Your AniList</span><span class="v">' +
         (e === undefined ? (c.loginErr ? 'login not accepted' : getToken() ? '...' : 'not connected') : e === null ? 'not on your list'
@@ -884,7 +1035,7 @@ code{background:#0f1218;border-radius:6px;padding:2px 6px;font-size:12.5px;word-
     if (c.synced && canUndo) {
       return '<div class="two"><button class="btn ok" disabled>✓ Updated</button><button class="btn sec" data-act="undo">Undo</button></div>';
     }
-    const plan = makePlan(c, 'manual');
+    const plan = planFor(c, 'manual');
     let h = '';
     if (plan.skip) {
       h += '<button class="btn ok" disabled>' + esc(plan.skip) + '</button>';
@@ -898,7 +1049,7 @@ code{background:#0f1218;border-radius:6px;padding:2px 6px;font-size:12.5px;word-
   function matchView() {
     const s = cur && cur.series;
     if (!s) { view = 'main'; return mainView(); }
-    let h = '<div class="t1">Which AniList entry is this?</div><div class="muted">' + esc(s.title) + ' on atsu.moe</div>';
+    let h = '<div class="t1">Which AniList entry is this?</div><div class="muted">' + esc(s.title) + ' on ' + SITE + '</div>';
     h += '<div class="two" style="margin-top:10px"><input class="text q" type="search" value="' + esc(searchText || s.title) +
       '" placeholder="Search AniList" enterkeyhint="search"><button class="btn" style="width:auto;margin:0;flex:none" data-act="search">Search</button></div>';
     if (searchRes === 'busy') h += '<div class="muted" style="margin-top:10px">Searching...</div>';
@@ -927,7 +1078,7 @@ code{background:#0f1218;border-radius:6px;padding:2px 6px;font-size:12.5px;word-
       '<li>Save, then copy the <b>Client ID</b> (a number) into this box:</li></ol>';
     h += '<input class="text cid" inputmode="numeric" placeholder="Client ID" value="' + esc(id) + '">';
     h += '<button class="btn" data-act="go">Connect</button>';
-    h += '<div class="muted" style="margin-top:10px">AniList asks you to approve, then shows a "Back to atsu.moe" button. ' +
+    h += '<div class="muted" style="margin-top:10px">AniList asks you to approve, then shows a "Back to ' + SITE + '" button. ' +
       'If it shows only a long token instead, copy it and paste it below.</div>';
     h += '<h3>Or paste a token</h3><input class="text tok" placeholder="AniList access token">' +
       '<button class="btn sec" data-act="savetok">Save token</button>';
@@ -1042,6 +1193,7 @@ code{background:#0f1218;border-radius:6px;padding:2px 6px;font-size:12.5px;word-
       else { addPending(c); refreshPlan(c); }
     }
     ensureUi();
+    if (c.kind === 'hseries') syncPageBtn();               // hiperdex redraws its button row now and then
     quietCheck();
   }
 
