@@ -1,6 +1,6 @@
 # Atsumoe stuff
 
-Plugins for [atsu.moe](https://atsu.moe). Install [Tampermonkey](https://www.tampermonkey.net/) first, then click an install link.
+Plugins for [atsu.moe](https://atsu.moe), and one for hiperdex.com that works together with atsu. Install [Tampermonkey](https://www.tampermonkey.net/) first, then click an install link.
 
 | Plugin | What it does | Install |
 |---|---|---|
@@ -8,6 +8,7 @@ Plugins for [atsu.moe](https://atsu.moe). Install [Tampermonkey](https://www.tam
 | **AniList Tracker** | AniList tracker for the mobile Firefox browser: updates your AniList at 85% of a chapter | [install](https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/anilist-tracker/atsu-anilist-tracker.user.js) + steps below |
 | Comfy Reader | Smooth arrow-key scrolling | [install](https://raw.githubusercontent.com/YoruCAnime/Anime-site-scripts/main/atsumoe/atsu-comfy-reader.user.js) |
 | Next Chapters | New-chapter countdown on the home page | [install](https://raw.githubusercontent.com/YoruCAnime/Anime-site-scripts/main/atsumoe/atsu-next-chapters.user.js) |
+| **Hiperdex Comfy Reader** | For hiperdex.com (PC and phone): no ads or pop-ups, atsu-style home page, auto-scroll, reading saved to atsu | [install](https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/hiperdex/hiperdex-comfy.user.js) + steps below |
 
 ## Voice Reader
 
@@ -51,3 +52,32 @@ AniList tracker for the mobile Firefox browser, by YoruC. A thin line along the 
 > 4. Open a chapter, scroll a little, tap **! Connect AL** at the bottom left and follow the steps (one time).
 
 Your AniList login stays in Tampermonkey on your phone. atsu's own AniList sync can stay on: chapters AniList already has are skipped.
+
+## Hiperdex Comfy Reader
+
+For hiperdex.com, by YoruC. Works on a PC and on a phone (Firefox + Tampermonkey).
+
+- **No ads:** ad boxes, sponsored cards and the pop-up tabs on clicks are gone.
+- **Home page like atsu:** Continue Reading and Updates For You rows at the top.
+- **Series pages:** a Resume button, your read chapters marked, and Similar series under the chapter list.
+- **Reading:** a chapter opens where you stopped, and what you read here is saved to your atsu.moe account too (sign in on atsu in the same browser).
+- **Auto-scroll:** from a slow creep to fast reading; the speed bar hides after 3 seconds.
+- **Bookmarks:** the first time you open the home page signed in, your atsu bookmarks are put on your hiperdex list (once, with the chapters you read). A series you remove later is not put back.
+
+| On a PC | |
+|---|---|
+| K | Auto-scroll on / off |
+| Up / Down | Smooth scrolling (hold to glide, Shift = faster) |
+| Home | Home page |
+| End | This series' page |
+| Left / Right | Switched off (no jumping chapters by accident) |
+
+**On a phone** a small button bar sits bottom right on chapters: home, series page and auto-scroll. Auto-scroll waits while your finger is on the page.
+
+> [!TIP]
+> **Install on your phone**
+> 1. Get [Firefox](https://play.google.com/store/apps/details?id=org.mozilla.firefox) from the Play Store.
+> 2. In Firefox, open [Tampermonkey](https://addons.mozilla.org/addon/tampermonkey/) and tap **Add to Firefox**.
+> 3. In Firefox, open the [install link](https://raw.githubusercontent.com/YoruCAnime/Atsumoe-stuff/main/hiperdex/hiperdex-comfy.user.js) and tap **Install**.
+
+Updates come by themselves through Tampermonkey.
