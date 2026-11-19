@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Atsu → AniList Sync
 // @namespace    https://atsu.moe/
-// @version      1.1.1
+// @version      1.1.2
 // @description  AniList tracker for the mobile Firefox browser on atsu.moe and hiperdex.com: a reading line along the bottom of the reader, and once you have read 85% of a chapter your AniList progress goes up (it shows in your AniList activity). Tap the line to update by hand, fix the match or change the settings.
 // @author       YoruC
 // @homepageURL  https://github.com/YoruCAnime/Atsumoe-stuff
@@ -58,7 +58,7 @@
    *  the "Read chapter N of ..." activity, same as on the site.
    * ==================================================================== */
 
-  const VERSION = '1.1.1';
+  const VERSION = '1.1.2';
   const HIPER = /(^|\.)hiperdex\.com$/.test(location.hostname);
   const SITE = HIPER ? 'hiperdex.com' : 'atsu.moe';
   const API = 'https://graphql.anilist.co';
@@ -464,14 +464,16 @@
     };
   }
 
-  // hiperdex series page, the Add to AniList button: a series not on the list goes in as Reading, at the last
-  // chapter you read here (if any); one already on the list moves up to that chapter, else it just shows it.
+  // hiperdex series page, the Add to AniList button: a series not on the list goes in as Reading at the last
+  // chapter you read here, or as Planning when you have not read any here yet (AniList posts no activity for
+  // "Reading, ch 0", so such an add looked lost; Planning shows as "plans to read"). One already on the list
+  // moves up to the chapter you read here, else the button just shows it.
   function seriesPlan(c) {
     const n = chOf(c), e = c.entry;
     if (!e) {
-      const v = { mediaId: c.media.id, status: 'CURRENT', startedAt: today() };
-      if (n >= 1) v.progress = n;
-      return { vars: v, label: 'Add to AniList as Reading' + (n >= 1 ? ' at ch ' + n : ''), done: 'added to Reading' + (n >= 1 ? ' at ch ' + n : '') };
+      if (!(n >= 1)) return { vars: { mediaId: c.media.id, status: 'PLANNING' }, label: 'Add to AniList as Planning', done: 'added to Planning' };
+      const v = { mediaId: c.media.id, status: 'CURRENT', startedAt: today(), progress: n };
+      return { vars: v, label: 'Add to AniList as Reading at ch ' + n, done: 'added to Reading at ch ' + n };
     }
     if (n >= 1 && e.status !== 'COMPLETED') {
       const p = makePlan(c, 'manual');
@@ -868,7 +870,7 @@ code{background:#0f1218;border-radius:6px;padding:2px 6px;font-size:12.5px;word-
   }
 
   // hiperdex series pages: an AniList button in the page's own button row (after Favorite). Not on your list:
-  // one tap adds it as Reading (at the last chapter you read here), with Undo. On your list: status + chapter,
+  // one tap adds it as Reading at the last chapter you read here (Planning if none), with Undo. On your list: status + chapter,
   // a tap opens the panel. No match / not connected: a tap opens the match search / the connect steps.
   let pageBtn = null;
   function btnText(c) {
@@ -881,7 +883,7 @@ code{background:#0f1218;border-radius:6px;padding:2px 6px;font-size:12.5px;word-
     }
     const e = c.entry;
     if (e === null) return '+ Add to AniList';
-    if (e) return 'AniList: ' + (STATUS[e.status] || e.status) + ' · ch ' + (e.progress || 0);
+    if (e) return 'AniList: ' + (STATUS[e.status] || e.status) + (e.progress || e.status !== 'PLANNING' ? ' · ch ' + (e.progress || 0) : '');
     return 'AniList';
   }
   function syncPageBtn() {

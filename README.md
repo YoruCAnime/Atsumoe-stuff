@@ -53,7 +53,7 @@ AniList tracker for the mobile Firefox browser, by YoruC. A thin line along the 
 
 Your AniList login stays in Tampermonkey on your phone. atsu's own AniList sync can stay on: chapters AniList already has are skipped.
 
-**hiperdex.com too:** chapters there update AniList the same way (one login for both sites). hiperdex has no AniList link, so the series is found on AniList by its name; if it picks the wrong one or none, tap the line and **Change match**. On a series page an **Add to AniList** button sits after Favorite: one tap adds the series as Reading, at the last chapter you read there (with Hiperdex Comfy Reader installed). Once it is on your list the button shows your status and chapter; tap it for the panel.
+**hiperdex.com too:** chapters there update AniList the same way (one login for both sites). hiperdex has no AniList link, so the series is found on AniList by its name; if it picks the wrong one or none, tap the line and **Change match**. On a series page an **Add to AniList** button sits after Favorite: one tap adds the series as Reading at the last chapter you read there (with Hiperdex Comfy Reader installed), or as Planning if you have not read any there yet, so it shows in your AniList activity either way. Once it is on your list the button shows your status and chapter; tap it for the panel.
 
 ## Hiperdex Comfy Reader
 
